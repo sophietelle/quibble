@@ -603,7 +603,7 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
 
 #ifdef __x86_64__
     if (version == _WIN32_WINNT_WIN11 && mdt) {
-        // Collect all descriptors into an array
+        // Collect descriptor nodes into a stack array for sorting
         unsigned int count = 0;
         le = mdl.Flink;
         while (le != &mdl) {
@@ -614,67 +614,77 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
         if (count == 0) {
             mdt->Root = NULL;
             mdt->Min = NULL;
-            InitializeListHead(&mdl);
-            return EFI_SUCCESS;
+        } else {
+            // Use a fixed-size buffer — typical count is < 200
+            RTL_BALANCED_NODE* nodes[512];
+            if (count > 512)
+                count = 512;
+
+            unsigned int i = 0;
+            le = mdl.Flink;
+            while (le != &mdl && i < count) {
+                nodes[i++] = (RTL_BALANCED_NODE*)le;
+                le = le->Flink;
+            }
+
+            // Sort by BasePage (insertion sort — count is small)
+            for (i = 1; i < count; i++) {
+                RTL_BALANCED_NODE* key = nodes[i];
+                uint64_t key_bp = ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)key)->BasePage;
+                int j = (int)i - 1;
+                while (j >= 0 && ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)nodes[j])->BasePage > key_bp) {
+                    nodes[j + 1] = nodes[j];
+                    j--;
+                }
+                nodes[j + 1] = key;
+            }
+
+            // Build balanced BST from sorted array (physical addresses)
+            RTL_BALANCED_NODE* root = build_bst(nodes, 0, (int)count - 1, NULL);
+
+            // Find minimum (leftmost node)
+            RTL_BALANCED_NODE* min_node = root;
+            if (min_node) {
+                while (min_node->Left)
+                    min_node = min_node->Left;
+            }
+
+            // Fix up tree pointers to virtual addresses
+            for (i = 0; i < count; i++) {
+                RTL_BALANCED_NODE* node = nodes[i];
+                if (node->Left)
+                    node->Left = (RTL_BALANCED_NODE*)fix_address_mapping(node->Left, pa, va);
+                if (node->Right)
+                    node->Right = (RTL_BALANCED_NODE*)fix_address_mapping(node->Right, pa, va);
+                uintptr_t pv = node->ParentValue;
+                if (pv & ~(uintptr_t)3)
+                    node->ParentValue = (uintptr_t)fix_address_mapping((void*)(pv & ~(uintptr_t)3), pa, va) | (pv & 3);
+            }
+
+            mdt->Root = root ? (RTL_BALANCED_NODE*)fix_address_mapping(root, pa, va) : NULL;
+            mdt->Min = min_node ? (RTL_BALANCED_NODE*)fix_address_mapping(min_node, pa, va) : NULL;
         }
 
-        RTL_BALANCED_NODE** nodes = (RTL_BALANCED_NODE**)systable->BootServices->AllocatePool(
-            EfiLoaderData, count * sizeof(RTL_BALANCED_NODE*), (void**)&nodes);
-        // Fall back if AllocatePool fails — leave tree empty
-        if (!nodes) {
-            mdt->Root = NULL;
-            mdt->Min = NULL;
-            InitializeListHead(&mdl);
-            return EFI_SUCCESS;
-        }
-
-        unsigned int i = 0;
+        // Also fix up the list pointers to virtual addresses — kernel uses both
         le = mdl.Flink;
         while (le != &mdl) {
-            nodes[i++] = (RTL_BALANCED_NODE*)le;
-            le = le->Flink;
+            LIST_ENTRY* le2 = le->Flink;
+
+            if (le->Flink == &mdl)
+                le->Flink = mdl.Flink->Blink;
+            else
+                le->Flink = (LIST_ENTRY*)fix_address_mapping(le->Flink, pa, va);
+
+            if (le->Blink == &mdl)
+                le->Blink = (LIST_ENTRY*)find_virtual_address(le->Blink, mappings);
+            else
+                le->Blink = (LIST_ENTRY*)fix_address_mapping(le->Blink, pa, va);
+
+            le = le2;
         }
 
-        // Sort by BasePage (bubble sort — count is small)
-        for (i = 0; i < count - 1; i++) {
-            for (unsigned int j = 0; j < count - 1 - i; j++) {
-                uint64_t bp1 = ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)nodes[j])->BasePage;
-                uint64_t bp2 = ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)nodes[j + 1])->BasePage;
-                if (bp1 > bp2) {
-                    RTL_BALANCED_NODE* tmp = nodes[j];
-                    nodes[j] = nodes[j + 1];
-                    nodes[j + 1] = tmp;
-                }
-            }
-        }
-
-        // Build balanced BST (physical addresses)
-        RTL_BALANCED_NODE* root = build_bst(nodes, 0, (int)count - 1, NULL);
-
-        // Find minimum (leftmost node)
-        RTL_BALANCED_NODE* min_node = root;
-        while (min_node->Left)
-            min_node = min_node->Left;
-
-        // Fix up tree pointers to virtual addresses
-        for (i = 0; i < count; i++) {
-            RTL_BALANCED_NODE* node = nodes[i];
-            if (node->Left)
-                node->Left = (RTL_BALANCED_NODE*)fix_address_mapping(node->Left, pa, va);
-            if (node->Right)
-                node->Right = (RTL_BALANCED_NODE*)fix_address_mapping(node->Right, pa, va);
-            uintptr_t pv = node->ParentValue;
-            if (pv & ~(uintptr_t)3)
-                node->ParentValue = (uintptr_t)fix_address_mapping((void*)(pv & ~(uintptr_t)3), pa, va) | (pv & 3);
-        }
-
-        mdt->Root = (RTL_BALANCED_NODE*)fix_address_mapping(root, pa, va);
-        mdt->Min = (RTL_BALANCED_NODE*)fix_address_mapping(min_node, pa, va);
-
-        // List is consumed by the tree — empty the list head
-        InitializeListHead(&mdl);
-
-        systable->BootServices->FreePool(nodes);
+        mdl.Flink = (LIST_ENTRY*)fix_address_mapping(mdl.Flink, pa, va);
+        mdl.Blink = (LIST_ENTRY*)fix_address_mapping(mdl.Blink, pa, va);
 
         return EFI_SUCCESS;
     }
