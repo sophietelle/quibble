@@ -567,6 +567,18 @@ static EFI_STATUS initialize_extension_block(loader_store* store, T& extblock, u
         InitializeListHead(&extblock.HalExtensionModuleList);
     }
 
+    if constexpr (requires { T::PrmUpdateModuleList; }) {
+        InitializeListHead(&extblock.PrmUpdateModuleList);
+    }
+
+    if constexpr (requires { T::PrmFirmwareModuleList; }) {
+        InitializeListHead(&extblock.PrmFirmwareModuleList);
+    }
+
+    if constexpr (requires { T::HotPatchList; }) {
+        InitializeListHead(&extblock.HotPatchList);
+    }
+
     if constexpr (requires { T::SystemTime; })
         get_system_time(&extblock.SystemTime);
 
@@ -771,6 +783,15 @@ static void fix_extension_block_mapping(T& extblock, LIST_ENTRY* mappings) {
 
     if constexpr (requires { T::HalExtensionModuleList; })
         fix_list_mapping(&extblock.HalExtensionModuleList, mappings);
+
+    if constexpr (requires { T::PrmUpdateModuleList; })
+        fix_list_mapping(&extblock.PrmUpdateModuleList, mappings);
+
+    if constexpr (requires { T::PrmFirmwareModuleList; })
+        fix_list_mapping(&extblock.PrmFirmwareModuleList, mappings);
+
+    if constexpr (requires { T::HotPatchList; })
+        fix_list_mapping(&extblock.HotPatchList, mappings);
 
     if constexpr (requires { T::ApiSetSchemaExtensions; })
         fix_list_mapping(&extblock.ApiSetSchemaExtensions, mappings);
