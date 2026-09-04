@@ -649,7 +649,32 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
                     min_node = min_node->Left;
             }
 
-            // Fix up tree pointers to virtual addresses
+            // Fix up list pointers to virtual addresses FIRST — the list's
+            // Flink/Blink share a union with the tree's Left/Right, so fixing
+            // up the tree would corrupt the list traversal pointers.
+            le = mdl.Flink;
+            while (le != &mdl) {
+                LIST_ENTRY* le2 = le->Flink;
+
+                if (le->Flink == &mdl)
+                    le->Flink = mdl.Flink->Blink;
+                else
+                    le->Flink = (LIST_ENTRY*)fix_address_mapping(le->Flink, pa, va);
+
+                if (le->Blink == &mdl)
+                    le->Blink = (LIST_ENTRY*)find_virtual_address(le->Blink, mappings);
+                else
+                    le->Blink = (LIST_ENTRY*)fix_address_mapping(le->Blink, pa, va);
+
+                le = le2;
+            }
+
+            mdl.Flink = (LIST_ENTRY*)fix_address_mapping(mdl.Flink, pa, va);
+            mdl.Blink = (LIST_ENTRY*)fix_address_mapping(mdl.Blink, pa, va);
+
+            // Now fix up tree pointers to virtual addresses using the saved
+            // node array (list Flink/Blink are already VAs, but tree
+            // Left/Right/ParentValue are still physical).
             for (i = 0; i < count; i++) {
                 RTL_BALANCED_NODE* node = nodes[i];
                 if (node->Left)
@@ -664,27 +689,6 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
             mdt->Root = root ? (RTL_BALANCED_NODE*)fix_address_mapping(root, pa, va) : NULL;
             mdt->Min = min_node ? (RTL_BALANCED_NODE*)fix_address_mapping(min_node, pa, va) : NULL;
         }
-
-        // Also fix up the list pointers to virtual addresses — kernel uses both
-        le = mdl.Flink;
-        while (le != &mdl) {
-            LIST_ENTRY* le2 = le->Flink;
-
-            if (le->Flink == &mdl)
-                le->Flink = mdl.Flink->Blink;
-            else
-                le->Flink = (LIST_ENTRY*)fix_address_mapping(le->Flink, pa, va);
-
-            if (le->Blink == &mdl)
-                le->Blink = (LIST_ENTRY*)find_virtual_address(le->Blink, mappings);
-            else
-                le->Blink = (LIST_ENTRY*)fix_address_mapping(le->Blink, pa, va);
-
-            le = le2;
-        }
-
-        mdl.Flink = (LIST_ENTRY*)fix_address_mapping(mdl.Flink, pa, va);
-        mdl.Blink = (LIST_ENTRY*)fix_address_mapping(mdl.Blink, pa, va);
 
         return EFI_SUCCESS;
     }
