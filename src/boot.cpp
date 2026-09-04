@@ -74,6 +74,7 @@ typedef struct {
 #ifdef __x86_64__
         LOADER_PARAMETER_EXTENSION_WIN11 extension_win11;
         LOADER_PARAMETER_EXTENSION_WIN11_22H2 extension_win11_22H2;
+        LOADER_PARAMETER_EXTENSION_WIN11_24H2 extension_win11_24H2;
 #endif
     };
 
@@ -423,6 +424,7 @@ using extension_block_variant = std::variant<LOADER_PARAMETER_EXTENSION_WS03*,
 #ifdef __x86_64__
                                              , LOADER_PARAMETER_EXTENSION_WIN11*
                                              , LOADER_PARAMETER_EXTENSION_WIN11_22H2*
+                                             , LOADER_PARAMETER_EXTENSION_WIN11_24H2*
 #endif
                                              >;
 
@@ -461,7 +463,7 @@ static std::optional<extension_block_variant> find_extension_block(loader_store*
 #ifdef __x86_64__
     else if (version == _WIN32_WINNT_WIN11) {
         if (build >= WIN11_BUILD_24H2)
-            {} // 24H2 and later not yet supported - fall through
+            return &store->extension_win11_24H2;
         else if (build >= WIN11_BUILD_22H2) // 22H2 and 23H2 share the same layout
             return &store->extension_win11_22H2;
         else
@@ -527,11 +529,11 @@ static EFI_STATUS initialize_extension_block(loader_store* store, T& extblock, u
 
     if constexpr (requires { T::MajorRelease; }) {
         if (version == _WIN32_WINNT_WIN11) {
-            if (build >= WIN11_BUILD_23H2)
-                extblock.MajorRelease = NTDDI_WIN10_NI1;
-            else if (build >= WIN11_BUILD_22H2)
+            if (build >= WIN11_BUILD_24H2)
+                extblock.MajorRelease = NTDDI_WIN11_GE;
+            else if (build >= WIN11_BUILD_22H2) // 22H2 and 23H2 both use NI
                 extblock.MajorRelease = NTDDI_WIN10_NI;
-            else
+            else // 21H2
                 extblock.MajorRelease = NTDDI_WIN10_CO;
         } else if (build >= WIN10_BUILD_2004)
             extblock.MajorRelease = NTDDI_WIN10_20H1;
