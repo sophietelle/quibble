@@ -4637,11 +4637,28 @@ static_assert(offsetof(LOADER_PARAMETER_BLOCK_WIN10, ArcWindowsSysPartName) == 0
 
 #ifdef __x86_64__
 
+typedef struct _RTL_BALANCED_NODE {
+    union {
+        struct _RTL_BALANCED_NODE* Children[2];
+        struct {
+            struct _RTL_BALANCED_NODE* Left;
+            struct _RTL_BALANCED_NODE* Right;
+        };
+    };
+    union {
+        uint8_t Red : 1;
+        uint8_t Balance : 2;
+        uintptr_t ParentValue;
+    };
+} RTL_BALANCED_NODE;
+
+static_assert(sizeof(RTL_BALANCED_NODE) == 0x18, "RTL_BALANCED_NODE has incorrect size.");
+
 typedef struct {
-    struct RTL_BALANCED_NODE* Root;
+    RTL_BALANCED_NODE* Root;
     union {
         uint8_t Encoded : 1;
-        struct RTL_BALANCED_NODE* Min;
+        RTL_BALANCED_NODE* Min;
     };
 } RTL_RB_TREE;
 
@@ -4877,6 +4894,23 @@ typedef struct {
     uintptr_t BasePage;
     uintptr_t PageCount;
 } MEMORY_ALLOCATION_DESCRIPTOR;
+
+#ifdef __x86_64__
+typedef struct {
+    union {
+        LIST_ENTRY ListEntry;
+        RTL_BALANCED_NODE Node;
+    };
+    TYPE_OF_MEMORY MemoryType;
+    uint64_t BasePage;
+    uint64_t PageCount;
+} MEMORY_ALLOCATION_DESCRIPTOR_WIN11;
+
+static_assert(sizeof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11) == 0x30, "MEMORY_ALLOCATION_DESCRIPTOR_WIN11 has incorrect size.");
+static_assert(offsetof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11, MemoryType) == 0x18, "MEMORY_ALLOCATION_DESCRIPTOR_WIN11 MemoryType");
+static_assert(offsetof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11, BasePage) == 0x20, "MEMORY_ALLOCATION_DESCRIPTOR_WIN11 BasePage");
+static_assert(offsetof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11, PageCount) == 0x28, "MEMORY_ALLOCATION_DESCRIPTOR_WIN11 PageCount");
+#endif
 
 #define LDRP_IMAGE_INTEGRITY_FORCED     0x00000020
 #define LDRP_ENTRY_PROCESSED            0x00004000

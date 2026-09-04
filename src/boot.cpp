@@ -4355,8 +4355,11 @@ static EFI_STATUS boot(EFI_HANDLE image_handle, EFI_BOOT_SERVICES* bs, EFI_FILE_
     set_idt(idt_pa);
 
     std::visit([&](auto&& b) {
+        void* mdt = nullptr;
+        if constexpr (requires { b->MemoryDescriptorTree; })
+            mdt = &b->MemoryDescriptorTree;
         Status = enable_paging(image_handle, bs, &mappings, b->MemoryDescriptorListHead,
-                               va, loader_pages_spanned);
+                               va, loader_pages_spanned, version, mdt);
     }, loader_block);
 
     if (EFI_ERROR(Status)) {

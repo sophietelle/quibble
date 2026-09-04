@@ -521,9 +521,28 @@ EFI_STATUS process_memory_map(EFI_BOOT_SERVICES* bs, void** va, LIST_ENTRY* mapp
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY& mdl, void* pa, void* va) {
+static RTL_BALANCED_NODE* build_bst(RTL_BALANCED_NODE** nodes, int start, int end, RTL_BALANCED_NODE* parent) {
+    if (start > end)
+        return NULL;
+
+    int mid = (start + end) / 2;
+    RTL_BALANCED_NODE* node = nodes[mid];
+
+    node->Left = build_bst(nodes, start, mid - 1, node);
+    node->Right = build_bst(nodes, mid + 1, end, node);
+    node->ParentValue = (uintptr_t)parent;
+
+    return node;
+}
+
+static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY& mdl, void* pa, void* va,
+                                               uint16_t version, RTL_RB_TREE* mdt) {
     LIST_ENTRY* le;
     void* data;
+    size_t desc_size;
+
+    desc_size = (version == _WIN32_WINNT_WIN11) ? sizeof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11)
+                                                : sizeof(MEMORY_ALLOCATION_DESCRIPTOR);
 
     data = pa;
 
@@ -532,15 +551,22 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
     le = mappings->Flink;
     while (le != mappings) {
         mapping* m = _CR(le, mapping, list_entry);
-        MEMORY_ALLOCATION_DESCRIPTOR* mad = (MEMORY_ALLOCATION_DESCRIPTOR*)data;
 
-        mad->MemoryType = m->type;
-        mad->BasePage = (uintptr_t)m->pa / EFI_PAGE_SIZE;
-        mad->PageCount = m->pages;
+        if (version == _WIN32_WINNT_WIN11) {
+            MEMORY_ALLOCATION_DESCRIPTOR_WIN11* mad = (MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)data;
+            mad->MemoryType = m->type;
+            mad->BasePage = (uint64_t)(uintptr_t)m->pa / EFI_PAGE_SIZE;
+            mad->PageCount = m->pages;
+            InsertTailList(&mdl, &mad->ListEntry);
+        } else {
+            MEMORY_ALLOCATION_DESCRIPTOR* mad = (MEMORY_ALLOCATION_DESCRIPTOR*)data;
+            mad->MemoryType = m->type;
+            mad->BasePage = (uintptr_t)m->pa / EFI_PAGE_SIZE;
+            mad->PageCount = m->pages;
+            InsertTailList(&mdl, &mad->ListEntry);
+        }
 
-        InsertTailList(&mdl, &mad->ListEntry);
-
-        data = (uint8_t*)data + sizeof(MEMORY_ALLOCATION_DESCRIPTOR);
+        data = (uint8_t*)data + desc_size;
 
         le = le->Flink;
     }
@@ -549,20 +575,110 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
 
     le = mdl.Flink;
     while (le != &mdl) {
-        MEMORY_ALLOCATION_DESCRIPTOR* mad = _CR(le, MEMORY_ALLOCATION_DESCRIPTOR, ListEntry);
-        MEMORY_ALLOCATION_DESCRIPTOR* mad2 = _CR(le->Flink, MEMORY_ALLOCATION_DESCRIPTOR, ListEntry);
-
         if (le->Flink == &mdl)
             break;
 
-        if (mad->BasePage + mad->PageCount == mad2->BasePage && mad->MemoryType == mad2->MemoryType) {
-            mad->PageCount += mad2->PageCount;
-            RemoveEntryList(&mad2->ListEntry);
-            continue;
+        if (version == _WIN32_WINNT_WIN11) {
+            MEMORY_ALLOCATION_DESCRIPTOR_WIN11* mad = _CR(le, MEMORY_ALLOCATION_DESCRIPTOR_WIN11, ListEntry);
+            MEMORY_ALLOCATION_DESCRIPTOR_WIN11* mad2 = _CR(le->Flink, MEMORY_ALLOCATION_DESCRIPTOR_WIN11, ListEntry);
+
+            if (mad->BasePage + mad->PageCount == mad2->BasePage && mad->MemoryType == mad2->MemoryType) {
+                mad->PageCount += mad2->PageCount;
+                RemoveEntryList(&mad2->ListEntry);
+                continue;
+            }
+        } else {
+            MEMORY_ALLOCATION_DESCRIPTOR* mad = _CR(le, MEMORY_ALLOCATION_DESCRIPTOR, ListEntry);
+            MEMORY_ALLOCATION_DESCRIPTOR* mad2 = _CR(le->Flink, MEMORY_ALLOCATION_DESCRIPTOR, ListEntry);
+
+            if (mad->BasePage + mad->PageCount == mad2->BasePage && mad->MemoryType == mad2->MemoryType) {
+                mad->PageCount += mad2->PageCount;
+                RemoveEntryList(&mad2->ListEntry);
+                continue;
+            }
         }
 
         le = le->Flink;
     }
+
+#ifdef __x86_64__
+    if (version == _WIN32_WINNT_WIN11 && mdt) {
+        // Collect all descriptors into an array
+        unsigned int count = 0;
+        le = mdl.Flink;
+        while (le != &mdl) {
+            count++;
+            le = le->Flink;
+        }
+
+        if (count == 0) {
+            mdt->Root = NULL;
+            mdt->Min = NULL;
+            InitializeListHead(&mdl);
+            return EFI_SUCCESS;
+        }
+
+        RTL_BALANCED_NODE** nodes = (RTL_BALANCED_NODE**)systable->BootServices->AllocatePool(
+            EfiLoaderData, count * sizeof(RTL_BALANCED_NODE*), (void**)&nodes);
+        // Fall back if AllocatePool fails — leave tree empty
+        if (!nodes) {
+            mdt->Root = NULL;
+            mdt->Min = NULL;
+            InitializeListHead(&mdl);
+            return EFI_SUCCESS;
+        }
+
+        unsigned int i = 0;
+        le = mdl.Flink;
+        while (le != &mdl) {
+            nodes[i++] = (RTL_BALANCED_NODE*)le;
+            le = le->Flink;
+        }
+
+        // Sort by BasePage (bubble sort — count is small)
+        for (i = 0; i < count - 1; i++) {
+            for (unsigned int j = 0; j < count - 1 - i; j++) {
+                uint64_t bp1 = ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)nodes[j])->BasePage;
+                uint64_t bp2 = ((MEMORY_ALLOCATION_DESCRIPTOR_WIN11*)nodes[j + 1])->BasePage;
+                if (bp1 > bp2) {
+                    RTL_BALANCED_NODE* tmp = nodes[j];
+                    nodes[j] = nodes[j + 1];
+                    nodes[j + 1] = tmp;
+                }
+            }
+        }
+
+        // Build balanced BST (physical addresses)
+        RTL_BALANCED_NODE* root = build_bst(nodes, 0, (int)count - 1, NULL);
+
+        // Find minimum (leftmost node)
+        RTL_BALANCED_NODE* min_node = root;
+        while (min_node->Left)
+            min_node = min_node->Left;
+
+        // Fix up tree pointers to virtual addresses
+        for (i = 0; i < count; i++) {
+            RTL_BALANCED_NODE* node = nodes[i];
+            if (node->Left)
+                node->Left = (RTL_BALANCED_NODE*)fix_address_mapping(node->Left, pa, va);
+            if (node->Right)
+                node->Right = (RTL_BALANCED_NODE*)fix_address_mapping(node->Right, pa, va);
+            uintptr_t pv = node->ParentValue;
+            if (pv & ~(uintptr_t)3)
+                node->ParentValue = (uintptr_t)fix_address_mapping((void*)(pv & ~(uintptr_t)3), pa, va) | (pv & 3);
+        }
+
+        mdt->Root = (RTL_BALANCED_NODE*)fix_address_mapping(root, pa, va);
+        mdt->Min = (RTL_BALANCED_NODE*)fix_address_mapping(min_node, pa, va);
+
+        // List is consumed by the tree — empty the list head
+        InitializeListHead(&mdl);
+
+        systable->BootServices->FreePool(nodes);
+
+        return EFI_SUCCESS;
+    }
+#endif
 
     // change to virtual addresses
 
@@ -591,12 +707,16 @@ static EFI_STATUS setup_memory_descriptor_list(LIST_ENTRY* mappings, LIST_ENTRY&
 }
 
 static EFI_STATUS allocate_mdl(EFI_BOOT_SERVICES* bs, LIST_ENTRY* mappings, void* va,
-                               void** pa, size_t* mdl_pages) {
+                               void** pa, size_t* mdl_pages, uint16_t version) {
     EFI_STATUS Status;
     unsigned int num_entries = 0;
     LIST_ENTRY* le;
     size_t pages;
     EFI_PHYSICAL_ADDRESS addr;
+    size_t desc_size;
+
+    desc_size = (version == _WIN32_WINNT_WIN11) ? sizeof(MEMORY_ALLOCATION_DESCRIPTOR_WIN11)
+                                                : sizeof(MEMORY_ALLOCATION_DESCRIPTOR);
 
     // FIXME - ought to loop until no. of pages required for list is stable
 
@@ -611,7 +731,7 @@ static EFI_STATUS allocate_mdl(EFI_BOOT_SERVICES* bs, LIST_ENTRY* mappings, void
     num_entries++;
 
     // allocate pages for list
-    pages = page_count(num_entries * sizeof(MEMORY_ALLOCATION_DESCRIPTOR));
+    pages = page_count(num_entries * desc_size);
 
     Status = bs->AllocatePages(AllocateAnyPages, EfiBootServicesData, pages, &addr);
     if (EFI_ERROR(Status)) {
@@ -879,7 +999,8 @@ EFI_STATUS map_efi_runtime(EFI_BOOT_SERVICES* bs, LIST_ENTRY* mappings, void*& v
 }
 
 EFI_STATUS enable_paging(EFI_HANDLE image_handle, EFI_BOOT_SERVICES* bs, LIST_ENTRY* mappings,
-                         LIST_ENTRY& mdl_head, void* va, uintptr_t* loader_pages_spanned) {
+                         LIST_ENTRY& mdl_head, void* va, uintptr_t* loader_pages_spanned,
+                         uint16_t win_version, void* mdt) {
     EFI_STATUS Status;
     UINTN size, key, descsize;
     UINT32 version;
@@ -1149,7 +1270,7 @@ EFI_STATUS enable_paging(EFI_HANDLE image_handle, EFI_BOOT_SERVICES* bs, LIST_EN
     }
 #endif
 
-    Status = allocate_mdl(bs, mappings, va, &mdl_pa, &mdl_pages);
+    Status = allocate_mdl(bs, mappings, va, &mdl_pa, &mdl_pages, win_version);
     if (EFI_ERROR(Status)) {
         print_error("allocate_mdl", Status);
         return Status;
@@ -1161,7 +1282,7 @@ EFI_STATUS enable_paging(EFI_HANDLE image_handle, EFI_BOOT_SERVICES* bs, LIST_EN
         return Status;
     }
 
-    Status = setup_memory_descriptor_list(mappings, mdl_head, mdl_pa, va);
+    Status = setup_memory_descriptor_list(mappings, mdl_head, mdl_pa, va, win_version, (RTL_RB_TREE*)mdt);
     if (EFI_ERROR(Status)) {
         print_error("setup_memory_descriptor_list", Status);
         return Status;
