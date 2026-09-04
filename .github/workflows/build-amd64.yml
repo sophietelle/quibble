@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
 jobs:
   amd64:
-    runs-on: ubuntu-rolling
+    runs-on: ubuntu-latest
     steps:
-      - run: apt-get update
-      - run: apt-get install -y git cmake nodejs g++-mingw-w64-x86-64 gnu-efi
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y git cmake nodejs g++-mingw-w64-x86-64 gnu-efi
       - run: echo "SHORT_SHA=`echo ${{ github.sha }} | cut -c1-8`" >> $GITHUB_ENV
       - run: git clone --recurse-submodules ${{ github.server_url }}/${{ github.repository }} ${SHORT_SHA}
       - run: cd ${SHORT_SHA} && git checkout ${{ github.sha }}
@@ -28,9 +28,8 @@ jobs:
           cp release-work/quibble.efi install/ &&
           cp release-work/btrfs/btrfs.efi install/drivers/ &&
           cp release-work/ntfs/ntfs.efi install/drivers/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ github.sha }}
-          overwrite: true
           path: |
             install
