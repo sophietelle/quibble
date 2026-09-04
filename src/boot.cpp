@@ -51,6 +51,9 @@ typedef struct {
         LOADER_PARAMETER_BLOCK_WIN8 loader_block_win8;
         LOADER_PARAMETER_BLOCK_WIN81 loader_block_win81;
         LOADER_PARAMETER_BLOCK_WIN10 loader_block_win10;
+#ifdef __x86_64__
+        LOADER_PARAMETER_BLOCK_WIN11 loader_block_win11;
+#endif
     };
 
     union {
@@ -68,6 +71,10 @@ typedef struct {
         LOADER_PARAMETER_EXTENSION_WIN10_1903 extension_win10_1903;
         LOADER_PARAMETER_EXTENSION_WIN10_2004 extension_win10_2004;
         LOADER_PARAMETER_EXTENSION_WIN10_21H1 extension_win10_21H1;
+#ifdef __x86_64__
+        LOADER_PARAMETER_EXTENSION_WIN11 extension_win11;
+        LOADER_PARAMETER_EXTENSION_WIN11_22H2 extension_win11_22H2;
+#endif
     };
 
     char strings[1024];
@@ -239,7 +246,11 @@ using loader_block_variant = std::variant<LOADER_PARAMETER_BLOCK_WS03*,
                                           LOADER_PARAMETER_BLOCK_WIN7*,
                                           LOADER_PARAMETER_BLOCK_WIN8*,
                                           LOADER_PARAMETER_BLOCK_WIN81*,
-                                          LOADER_PARAMETER_BLOCK_WIN10*>;
+                                          LOADER_PARAMETER_BLOCK_WIN10*
+#ifdef __x86_64__
+                                          , LOADER_PARAMETER_BLOCK_WIN11*
+#endif
+                                          >;
 
 static std::optional<loader_block_variant> find_loader_block(loader_store* store, uint16_t version) {
     if (version <= _WIN32_WINNT_WS03)
@@ -254,6 +265,10 @@ static std::optional<loader_block_variant> find_loader_block(loader_store* store
         return &store->loader_block_win81;
     else if (version == _WIN32_WINNT_WIN10)
         return &store->loader_block_win10;
+#ifdef __x86_64__
+    else if (version == _WIN32_WINNT_WIN11)
+        return &store->loader_block_win11;
+#endif
 
     print_string("Unsupported Windows version.\n");
     return std::nullopt;
@@ -278,7 +293,7 @@ static EFI_STATUS initialize_loader_block(EFI_BOOT_SERVICES* bs, loader_store* s
     loader_block.BootDriverListHead.Blink->Flink = &loader_block.BootDriverListHead;
 
     if constexpr (requires { T::OsMajorVersion; })
-        loader_block.OsMajorVersion = version >> 8;
+        loader_block.OsMajorVersion = (version == _WIN32_WINNT_WIN11) ? 10 : (version >> 8);
 
     if constexpr (requires { T::OsMinorVersion; })
         loader_block.OsMinorVersion = version & 0xff;
@@ -404,7 +419,12 @@ using extension_block_variant = std::variant<LOADER_PARAMETER_EXTENSION_WS03*,
                                              LOADER_PARAMETER_EXTENSION_WIN10_1809*,
                                              LOADER_PARAMETER_EXTENSION_WIN10_1903*,
                                              LOADER_PARAMETER_EXTENSION_WIN10_2004*,
-                                             LOADER_PARAMETER_EXTENSION_WIN10_21H1*>;
+                                             LOADER_PARAMETER_EXTENSION_WIN10_21H1*
+#ifdef __x86_64__
+                                             , LOADER_PARAMETER_EXTENSION_WIN11*
+                                             , LOADER_PARAMETER_EXTENSION_WIN11_22H2*
+#endif
+                                             >;
 
 static std::optional<extension_block_variant> find_extension_block(loader_store* store, uint16_t version,
                                                                    uint16_t build, uint16_t revision) {
@@ -438,6 +458,16 @@ static std::optional<extension_block_variant> find_extension_block(loader_store*
         else
             return &store->extension_win10;
     }
+#ifdef __x86_64__
+    else if (version == _WIN32_WINNT_WIN11) {
+        if (build >= WIN11_BUILD_24H2)
+            {} // 24H2 and later not yet supported - fall through
+        else if (build >= WIN11_BUILD_22H2) // 22H2 and 23H2 share the same layout
+            return &store->extension_win11_22H2;
+        else
+            return &store->extension_win11;
+    }
+#endif
 
     print_string("Unsupported Windows version.\n");
     return std::nullopt;
@@ -496,7 +526,14 @@ static EFI_STATUS initialize_extension_block(loader_store* store, T& extblock, u
     }
 
     if constexpr (requires { T::MajorRelease; }) {
-        if (build >= WIN10_BUILD_2004)
+        if (version == _WIN32_WINNT_WIN11) {
+            if (build >= WIN11_BUILD_23H2)
+                extblock.MajorRelease = NTDDI_WIN10_NI1;
+            else if (build >= WIN11_BUILD_22H2)
+                extblock.MajorRelease = NTDDI_WIN10_NI;
+            else
+                extblock.MajorRelease = NTDDI_WIN10_CO;
+        } else if (build >= WIN10_BUILD_2004)
             extblock.MajorRelease = NTDDI_WIN10_20H1;
         else if (build >= WIN10_BUILD_1903) {
             // contrary to what you might expect, both 1903 and 1909 use the same value here
@@ -3454,6 +3491,8 @@ static EFI_STATUS boot(EFI_HANDLE image_handle, EFI_BOOT_SERVICES* bs, EFI_FILE_
         version = _WIN32_WINNT_WINBLUE;
     else if (version == 0x0700)
         version = _WIN32_WINNT_WIN7;
+    else if (version == _WIN32_WINNT_WIN10 && build >= WIN11_BUILD_21H2)
+        version = _WIN32_WINNT_WIN11;
     else if (version == _WIN32_WINNT_WIN10 && build == WIN10_BUILD_20H2 && revision >= 928)
         build = WIN10_BUILD_21H1;
     else if (version == _WIN32_WINNT_WIN10 && build == WIN10_BUILD_2004 && revision >= 2006)

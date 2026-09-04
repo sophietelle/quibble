@@ -81,6 +81,7 @@
 #define _WIN32_WINNT_WIN8                   0x0602
 #define _WIN32_WINNT_WINBLUE                0x0603
 #define _WIN32_WINNT_WIN10                  0x0A00
+#define _WIN32_WINNT_WIN11                  0x0B00
 
 #define WIN10_BUILD_1507            10240
 #define WIN10_BUILD_1511            10586
@@ -97,6 +98,11 @@
 #define WIN10_BUILD_21H2            19044
 #define WIN10_BUILD_22H2            19045
 
+#define WIN11_BUILD_21H2            22000
+#define WIN11_BUILD_22H2            22621
+#define WIN11_BUILD_23H2            22631
+#define WIN11_BUILD_24H2            26100
+
 #define NTDDI_WIN7                          0x06010000
 #define NTDDI_WIN8                          0x06020000
 #define NTDDI_WINBLUE                       0x06030000
@@ -109,6 +115,9 @@
 #define NTDDI_WIN10_RS5                     0x0a000006 // 1809
 #define NTDDI_WIN10_19H1                    0x0a000007 // 1903
 #define NTDDI_WIN10_20H1                    0x0a000008 // 2004
+#define NTDDI_WIN10_CO                      0x0a00000b // Windows 11 21H2 (Cobalt, build 22000)
+#define NTDDI_WIN10_NI                      0x0a00000c // Windows 11 22H2 (Nickel, build 22621)
+#define NTDDI_WIN10_NI1                     0x0a00000d // Windows 11 23H2 (build 22631)
 
 #define STATUS_NOT_IMPLEMENTED 0xC0000002
 

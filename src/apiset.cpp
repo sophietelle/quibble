@@ -366,7 +366,7 @@ bool search_api_set(wchar_t* dll, wchar_t* newname, uint16_t version) {
         return search_api_set_80(dll, newname);
     else if (version == _WIN32_WINNT_WINBLUE)
         return search_api_set_81(dll, newname);
-    else if (version == _WIN32_WINNT_WIN10)
+    else if (version == _WIN32_WINNT_WIN10 || version == _WIN32_WINNT_WIN11)
         return search_api_set_10(dll, newname);
     else
         return false;
