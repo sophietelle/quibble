@@ -3898,11 +3898,13 @@ typedef struct {
     LIST_ENTRY HotPatchList;
     void* BSPMicrocodeData;
     uint32_t BSPMicrocodeDataSize;
+    uint32_t padding13;
     struct {
         GUID TargetVolume;
         UNICODE_STRING* CimFiles;
         uint32_t CimFilesCount;
     } CimfsInformation;
+    uint32_t padding14;
     int64_t HalSoftRebootDatabase;
     struct {
         uint32_t KasanEnabled : 1;
